@@ -137,6 +137,17 @@ td.r,th.r{text-align:right}
 .banner{background:var(--accent-bg);border:1px solid rgba(242,184,75,.35);color:var(--accent);padding:10px 14px;border-radius:9px;margin-bottom:16px;font-size:13px}
 .rules{white-space:pre-wrap;font-size:13px;color:var(--muted);line-height:1.6}
 a.link{color:var(--blue)}
+.drop{border:1.5px dashed var(--line);border-radius:10px;padding:14px;text-align:center;color:var(--muted);cursor:pointer;font-size:13px;transition:.15s}
+.drop:hover,.drop.over{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+.shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-bottom:10px}
+.shot{position:relative;aspect-ratio:16/10;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:var(--panel2);cursor:zoom-in}
+.shot img{width:100%;height:100%;object-fit:cover;display:block}
+.shot .rm{position:absolute;top:5px;right:5px;width:24px;height:24px;border-radius:50%;border:0;background:rgba(0,0,0,.7);color:#fff;cursor:pointer;font-size:14px;line-height:24px;padding:0}
+.shot .ld{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted);background:rgba(12,15,20,.6)}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:90;display:flex;align-items:center;justify-content:center;cursor:zoom-out}
+.lightbox img{max-width:96vw;max-height:92vh;border-radius:6px}
+.lightbox .nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.1);border:0;color:#fff;font-size:28px;width:48px;height:64px;border-radius:8px;cursor:pointer}
+.lightbox .cnt{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);color:#aaa;font-size:12px;font-family:var(--mono)}
 </style>
 </head>
 <body>
@@ -198,8 +209,8 @@ const SB_KEY='sb_publishable_FwEDaD2qS2VcSgjf4GaBoA_WhblhY0Z';
 const sb=window.supabase.createClient(SB_URL,SB_KEY);
 const store={mode:'loading',user:null,trades:[],days:{},settings:mergeSettings(null)};
 function setStatus(k,txt){const el=$('#status');el.className='status '+k;el.querySelector('span').textContent=txt}
-const toRow=t=>({id:t.id,date:t.date,time:t.time||null,account:t.account||null,instrument:t.instrument,side:t.side,contracts:t.contracts,entry:t.entry,exit:t.exit,stop:t.stop,target:t.target,fees:t.fees,pnl_override:t.pnlOverride,setup:t.setup||null,session:t.session||null,grade:t.grade||null,emotion:t.emotion||null,followed_plan:t.followedPlan,mistakes:t.mistakes||[],notes:t.notes||null,link:t.link||null,updated_at:new Date().toISOString()});
-const fromRow=r=>({id:r.id,date:r.date,time:r.time||'',account:r.account,instrument:r.instrument,side:r.side,contracts:r.contracts,entry:r.entry,exit:r.exit,stop:r.stop,target:r.target,fees:r.fees,pnlOverride:r.pnl_override,setup:r.setup||'',session:r.session||'',grade:r.grade||'',emotion:r.emotion||'',followedPlan:r.followed_plan,mistakes:r.mistakes||[],notes:r.notes||'',link:r.link||''});
+const toRow=t=>({id:t.id,date:t.date,time:t.time||null,account:t.account||null,instrument:t.instrument,side:t.side,contracts:t.contracts,entry:t.entry,exit:t.exit,stop:t.stop,target:t.target,fees:t.fees,pnl_override:t.pnlOverride,setup:t.setup||null,session:t.session||null,grade:t.grade||null,emotion:t.emotion||null,followed_plan:t.followedPlan,mistakes:t.mistakes||[],notes:t.notes||null,link:t.link||null,screenshots:t.screenshots||[],updated_at:new Date().toISOString()});
+const fromRow=r=>({id:r.id,date:r.date,time:r.time||'',account:r.account,instrument:r.instrument,side:r.side,contracts:r.contracts,entry:r.entry,exit:r.exit,stop:r.stop,target:r.target,fees:r.fees,pnlOverride:r.pnl_override,setup:r.setup||'',session:r.session||'',grade:r.grade||'',emotion:r.emotion||'',followedPlan:r.followed_plan,mistakes:r.mistakes||[],notes:r.notes||'',link:r.link||'',screenshots:r.screenshots||[]});
 async function loadAll(){
   setStatus('','Loading…');
   const [t,d,st]=await Promise.all([
@@ -218,7 +229,9 @@ async function saveTrade(t){
   const i=store.trades.findIndex(x=>x.id===t.id);if(i>=0)store.trades[i]=t;else store.trades.push(t);render();return true;
 }
 async function deleteTrade(id){
+  const t=store.trades.find(x=>x.id===id);
   if(!await guard(sb.from('trades').delete().eq('id',id)))return false;
+  if(t&&t.screenshots)removeShots(t.screenshots);
   store.trades=store.trades.filter(x=>x.id!==id);render();return true;
 }
 async function saveDay(date,obj){
@@ -230,6 +243,36 @@ async function saveSettings(s,silent){
   if(!await guard(sb.from('journal_settings').upsert({user_id:store.user.id,data,updated_at:new Date().toISOString()},{onConflict:'user_id'})))return false;
   store.settings=mergeSettings(data);if(!silent)render();return true;
 }
+/* screenshots */
+const BUCKET='screenshots',urlCache={};
+async function signedUrls(paths){
+  const now=Date.now(),need=paths.filter(p=>!urlCache[p]||urlCache[p].exp<now+60e3);
+  if(need.length){const {data,error}=await sb.storage.from(BUCKET).createSignedUrls(need,3600);
+    if(!error)data.forEach(d=>{if(d.signedUrl)urlCache[d.path]={url:d.signedUrl,exp:now+3600e3}})}
+  return paths.map(p=>urlCache[p]?urlCache[p].url:null);
+}
+function compressImage(file){return new Promise(res=>{const img=new Image(),u=URL.createObjectURL(file);
+  img.onload=()=>{const max=2000,sc=Math.min(1,max/Math.max(img.width,img.height));const c=document.createElement('canvas');c.width=Math.round(img.width*sc);c.height=Math.round(img.height*sc);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(u);
+    c.toBlob(b=>res(b&&b.size<file.size?{blob:b,ext:'webp',type:'image/webp'}:{blob:file,ext:(file.type.split('/')[1]||'png').replace('jpeg','jpg'),type:file.type}),'image/webp',0.88)};
+  img.onerror=()=>{URL.revokeObjectURL(u);res({blob:file,ext:'png',type:file.type||'image/png'})};img.src=u})}
+async function uploadShot(tradeId,file){
+  const {blob,ext,type}=await compressImage(file);
+  const path=`${store.user.id}/${tradeId}/${uid()}.${ext}`;
+  const {error}=await sb.storage.from(BUCKET).upload(path,blob,{contentType:type,upsert:false});
+  if(error){toast('Upload failed: '+error.message);return null}
+  urlCache[path]={url:URL.createObjectURL(blob),exp:Date.now()+3600e3};return path;
+}
+async function removeShots(paths){if(paths.length){const {error}=await sb.storage.from(BUCKET).remove(paths);if(error)console.error(error)}}
+function lightbox(urls,i=0){
+  const lb=document.createElement('div');lb.className='lightbox';
+  const draw=()=>{lb.innerHTML=`<img src="${esc(urls[i])}">${urls.length>1?`<button class="nav" style="left:16px" data-d="-1">‹</button><button class="nav" style="right:16px" data-d="1">›</button><div class="cnt">${i+1} / ${urls.length}</div>`:''}`;
+    lb.querySelectorAll('.nav').forEach(b=>b.onclick=e=>{e.stopPropagation();i=(i+ +b.dataset.d+urls.length)%urls.length;draw()})};
+  const key=e=>{if(e.key==='Escape'){close()}else if(e.key==='ArrowRight'){i=(i+1)%urls.length;draw()}else if(e.key==='ArrowLeft'){i=(i-1+urls.length)%urls.length;draw()}e.stopPropagation()};
+  const close=()=>{lb.remove();document.removeEventListener('keydown',key,true)};
+  lb.onclick=close;document.addEventListener('keydown',key,true);draw();document.body.appendChild(lb);
+}
+
 /* auth */
 function showLogin(msg){
   $('#main').innerHTML=`<div class="card" style="max-width:380px;margin:60px auto;padding:26px">
@@ -429,7 +472,7 @@ function tradeTable(ts,compact){
   ${ts.map(t=>{const c=calc(t);return `<tr data-id="${esc(t.id)}"><td class="mono">${esc(t.date)}</td>${compact?'':`<td class="mono mut">${esc(t.time||'')}</td>`}<td>${esc(t.instrument)}</td><td><span class="tag ${t.side==='Short'?'short':'long'}">${esc(t.side)}</span></td><td class="r mono">${esc(t.contracts)}</td>
    ${compact?'':`<td class="r mono">${isNum(t.entry)?esc(t.entry):'—'}</td><td class="r mono">${isNum(t.exit)?esc(t.exit):'—'}</td>`}
    <td class="r mono ${cls(c.pts)}">${isNum(c.pts)?fx(c.pts):'—'}</td><td class="r mono ${cls(c.net)}">${usd(c.net)}</td><td class="r mono ${cls(c.r)}">${isNum(c.r)?fx(c.r)+'R':'—'}</td><td>${esc(t.setup||'')}</td>
-   ${compact?'':`<td>${esc(t.grade||'')}</td><td>${t.followedPlan===true?'<span class="pos">✓</span>':t.followedPlan===false?'<span class="neg">✗</span>':''}</td><td>${(t.mistakes||[]).map(m=>`<span class="tag warn">${esc(m)}</span>`).join(' ')}${t.notes?' <span class="note-dot" title="Has notes"></span>':''}</td>${store.settings.accounts.length>1?`<td class="mut">${esc(acc(t.account))}</td>`:''}`}</tr>`}).join('')}</tbody></table></div>`;
+   ${compact?'':`<td>${esc(t.grade||'')}</td><td>${t.followedPlan===true?'<span class="pos">✓</span>':t.followedPlan===false?'<span class="neg">✗</span>':''}</td><td>${(t.mistakes||[]).map(m=>`<span class="tag warn">${esc(m)}</span>`).join(' ')}${t.notes?' <span class="note-dot" title="Has notes"></span>':''}${(t.screenshots||[]).length?` <span class="mut" title="${t.screenshots.length} screenshot(s)">📷${t.screenshots.length>1?t.screenshots.length:''}</span>`:''}</td>${store.settings.accounts.length>1?`<td class="mut">${esc(acc(t.account))}</td>`:''}`}</tr>`}).join('')}</tbody></table></div>`;
 }
 function tradesHTML(){
   let ts=filtered();
@@ -536,7 +579,7 @@ function cfgMount(){
 
 /* ---------- modals ---------- */
 function openModal(html,size=''){$('#modalRoot').innerHTML=`<div class="scrim" id="scrim"><div class="modal ${size}">${html}</div></div>`;$('#scrim').addEventListener('mousedown',e=>{if(e.target.id==='scrim')closeModal()});document.querySelectorAll('[data-close]').forEach(b=>b.onclick=closeModal)}
-function closeModal(){$('#modalRoot').innerHTML=''}
+function closeModal(){const f=window.__onModalClose;window.__onModalClose=null;if(f)f();$('#modalRoot').innerHTML=''}
 function confirmBox(title,body,onYes,yes='Confirm'){
   const prev=$('#modalRoot').innerHTML;
   const wrap=document.createElement('div');wrap.className='scrim';wrap.style.zIndex=60;
@@ -577,6 +620,8 @@ function openTrade(t){
    <div class="f w2"><label>Followed my plan?</label><div class="seg" id="plan"><button type="button" class="L ${t.followedPlan===true?'on':''}" data-v="1">Yes</button><button type="button" class="S ${t.followedPlan===false?'on':''}" data-v="0">No</button><button type="button" class="N ${t.followedPlan===null||t.followedPlan===undefined?'on':''}" data-v="">Not set</button></div></div>
    <div class="f w2"><label>P&L override ($, before fees)</label><input name="pnlOverride" value="${esc(t.pnlOverride??'')}" inputmode="decimal" placeholder="Only for scaled exits / partials"></div>
    <div class="f w4"><label>Mistakes</label><div class="chips" id="mk">${s.mistakes.map(m=>`<button type="button" class="chip ${(t.mistakes||[]).includes(m)?'on':''}" data-m="${esc(m)}">${esc(m)}</button>`).join('')}</div></div>
+   <div class="f w4"><label>Screenshots</label><div class="shots" id="shots"></div>
+    <div class="drop" id="drop">📷 Paste a screenshot (Ctrl/Cmd+V), drop images here, or click to choose<input type="file" id="shotIn" accept="image/*" multiple hidden></div></div>
    <div class="f w4"><label>Notes — why you took it, what you saw, what to do differently</label><textarea name="notes" rows="4">${esc(t.notes||'')}</textarea></div>
    <div class="f w4"><label>Chart link (TradingView snapshot etc.)</label><input name="link" value="${esc(t.link||'')}" placeholder="https://www.tradingview.com/x/…">${t.link&&/^https?:\/\//.test(t.link)?`<a class="link hint" href="${esc(t.link)}" target="_blank" rel="noopener">Open chart ↗</a>`:''}</div>
   </form>${isNew&&s.maxTradesPerDay&&dayCount>=s.maxTradesPerDay?`<div class="banner" style="margin:14px 0 0">You’ve already logged ${dayCount} trades on this day — your max is ${s.maxTradesPerDay}.</div>`:''}</div>
@@ -594,10 +639,28 @@ function openTrade(t){
   ['side','plan'].forEach(id=>document.querySelectorAll(`#${id} button`).forEach(b=>b.onclick=()=>{document.querySelectorAll(`#${id} button`).forEach(x=>x.classList.remove('on'));b.classList.add('on');preview()}));
   document.querySelectorAll('#mk .chip').forEach(c=>c.onclick=()=>c.classList.toggle('on'));
   autoFee();preview();
-  $('#sv').onclick=async()=>{const o=read();
+  /* screenshots */
+  let shots=[...(t.screenshots||[])];const added=[],removed=[];let uploading=0,saved=false;
+  const drawShots=async()=>{const box=$('#shots');if(!box)return;
+    const urls=await signedUrls(shots);
+    box.innerHTML=shots.map((p,i)=>`<div class="shot" data-i="${i}"><img src="${esc(urls[i]||'')}" alt="Screenshot ${i+1}"><button type="button" class="rm" data-rm="${i}" title="Remove">×</button></div>`).join('')+(uploading?`<div class="shot"><div class="ld">Uploading ${uploading}…</div></div>`:'');
+    box.querySelectorAll('.shot[data-i]').forEach(el=>el.onclick=()=>lightbox(urls.filter(Boolean),+el.dataset.i));
+    box.querySelectorAll('[data-rm]').forEach(b=>b.onclick=e=>{e.stopPropagation();const p=shots.splice(+b.dataset.rm,1)[0];if(added.includes(p)){added.splice(added.indexOf(p),1);removeShots([p])}else removed.push(p);drawShots()})};
+  const addFiles=async files=>{const imgs=[...files].filter(f=>f.type.startsWith('image/'));if(!imgs.length)return;
+    uploading+=imgs.length;drawShots();
+    for(const f of imgs){if(f.size>25e6){toast('Image too large');uploading--;continue}const p=await uploadShot(t.id,f);uploading--;if(p){if(saved||!$('#tf')){removeShots([p]);continue}shots.push(p);added.push(p)}drawShots()}};
+  const drop=$('#drop'),inp=$('#shotIn');
+  drop.onclick=()=>inp.click();inp.onchange=()=>{addFiles(inp.files);inp.value=''};
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};drop.ondragleave=()=>drop.classList.remove('over');
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');addFiles(e.dataTransfer.files)};
+  const onPaste=e=>{const fs=[...(e.clipboardData?e.clipboardData.items:[])].filter(i=>i.kind==='file'&&i.type.startsWith('image/')).map(i=>i.getAsFile());if(fs.length){e.preventDefault();addFiles(fs)}};
+  document.addEventListener('paste',onPaste);
+  window.__onModalClose=()=>{document.removeEventListener('paste',onPaste);if(!saved)removeShots(added)};
+  drawShots();
+  $('#sv').onclick=async()=>{if(uploading){toast('Wait for the upload to finish');return}const o=read();o.screenshots=[...shots];
     if(!o.date){toast('Add a date');return}if(!isNum(o.contracts)||o.contracts<=0){toast('Add the number of contracts');return}
     if(!(isNum(o.entry)&&isNum(o.exit))&&!isNum(o.pnlOverride)){toast('Add entry and exit prices (or a P&L override)');return}
-    $('#sv').disabled=true;if(await saveTrade(o)){closeModal();toast(isNew?'Trade logged':'Trade updated')}else $('#sv').disabled=false};
+    $('#sv').disabled=true;if(await saveTrade(o)){saved=true;removeShots(removed);closeModal();toast(isNew?'Trade logged':'Trade updated')}else $('#sv').disabled=false};
   if(!isNew)$('#del').onclick=()=>confirmBox('Delete this trade?','This can’t be undone.',async()=>{if(await deleteTrade(t.id)){closeModal();toast('Trade deleted')}},'Delete');
   setTimeout(()=>{const e=isNew?f.entry:null;e&&e.focus()},30);
 }
