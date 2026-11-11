@@ -164,7 +164,10 @@ a.link{color:var(--blue)}
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const isNum=v=>v!==null&&v!==undefined&&v!==''&&isFinite(v);
-const num=v=>{if(v===null||v===undefined)return null;const s=String(v).trim().replace(',','.');if(s==='')return null;const n=parseFloat(s);return isFinite(n)?n:null};
+const num=v=>{if(v===null||v===undefined)return null;let s=String(v).trim().replace(/[\s$€£]/g,'');if(s==='')return null;
+  if(/^-?\d+k$/i.test(s))return parseFloat(s)*1000;
+  if(s.includes(',')&&s.includes('.'))s=s.replace(/,/g,'');else if(/^-?\d{1,3}(,\d{3})+$/.test(s))s=s.replace(/,/g,'');else s=s.replace(',','.');
+  const n=Number(s);return isFinite(n)?n:null};
 const pad=n=>String(n).padStart(2,'0');
 const ymd=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 const today=()=>ymd(new Date());
@@ -222,10 +225,10 @@ async function saveDay(date,obj){
   if(!await guard(sb.from('day_notes').upsert({user_id:store.user.id,date,...obj,updated_at:new Date().toISOString()},{onConflict:'user_id,date'})))return false;
   store.days[date]=obj;render();return true;
 }
-async function saveSettings(s){
+async function saveSettings(s,silent){
   const data=JSON.parse(JSON.stringify(s));
-  if(!await guard(sb.from('journal_settings').upsert({user_id:store.user.id,data,updated_at:new Date().toISOString()})))return false;
-  store.settings=mergeSettings(data);render();return true;
+  if(!await guard(sb.from('journal_settings').upsert({user_id:store.user.id,data,updated_at:new Date().toISOString()},{onConflict:'user_id'})))return false;
+  store.settings=mergeSettings(data);if(!silent)render();return true;
 }
 /* auth */
 function showLogin(msg){
@@ -496,24 +499,30 @@ function cfgHTML(){
    <div class="card"><h2>Daily limits</h2><label class="hint">Max trades per day</label><br><input id="mtpd" value="${esc(d.maxTradesPerDay??'')}" inputmode="numeric" style="margin-top:6px;width:120px">
     <h2 style="margin-top:22px">Backup</h2><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" id="bkJson">Copy full backup (JSON)</button><label class="btn sm" style="cursor:pointer">Restore backup<input type="file" id="rsJson" accept=".json,application/json" hidden></label></div></div>
   </div>
-  <div style="display:flex;gap:10px;align-items:center"><button class="btn pri" id="saveCfg">Save setup</button><button class="btn" id="resetCfg">Discard changes</button><span class="hint" id="dirtyNote">${cfgDirty?'Unsaved changes':''}</span></div>
+  <div style="display:flex;gap:10px;align-items:center;position:sticky;bottom:0;background:var(--bg);padding:12px 0;border-top:1px solid var(--line)"><button class="btn pri" id="saveCfg">Save setup</button><button class="btn" id="resetCfg">Discard changes</button><span class="hint" id="dirtyNote">Changes save automatically</span></div>
   </div>`;
 }
 function cfgMount(){
-  const dirty=()=>{cfgDirty=true;$('#dirtyNote').textContent='Unsaved changes'};
-  document.querySelectorAll('[data-a]').forEach(el=>el.addEventListener('input',()=>{const a=draft.accounts[+el.dataset.a],k=el.dataset.k;a[k]=['start','mll','dll','target'].includes(k)?num(el.value):el.value;dirty()}));
+  const note=t=>{const n=$('#dirtyNote');if(n)n.textContent=t};
+  const validate=()=>{const d={...draft,instruments:draft.instruments.filter(i=>i.sym)};if(!d.accounts.length)return [null,'Keep at least one account'];
+    for(const a of d.accounts){if(!a.name||!String(a.name).trim())return [null,'Every account needs a name'];if(!isNum(a.start))return [null,`“${a.name}” needs a start balance (numbers only, e.g. 50000)`]}
+    for(const i of d.instruments){if(!isNum(i.pv)||i.pv<=0)return [null,`${i.sym} needs a $ per point value`]}return [d,null]};
+  const autosave=async()=>{const [d,err]=validate();if(err){note('Not saved: '+err);return}note('Saving…');
+    if(await saveSettings(d,true)){cfgDirty=false;note('All changes saved ✓')}else note('Save failed — check your connection')};
+  const dirty=(now)=>{cfgDirty=true;note('Saving…');clearTimeout(window.__cfgT);window.__cfgT=setTimeout(autosave,now?0:700)};
+  if(window.__cfgPending){window.__cfgPending=false;dirty(true)}
+  document.querySelectorAll('[data-a]').forEach(el=>el.addEventListener(el.tagName==='SELECT'?'change':'input',()=>{const a=draft.accounts[+el.dataset.a],k=el.dataset.k;a[k]=['start','mll','dll','target'].includes(k)?num(el.value):el.value;dirty()}));
   document.querySelectorAll('[data-i]').forEach(el=>el.addEventListener('input',()=>{const x=draft.instruments[+el.dataset.i],k=el.dataset.k;x[k]=k==='sym'?el.value.trim().toUpperCase():num(el.value);dirty()}));
   document.querySelectorAll('[data-list]').forEach(el=>el.addEventListener('input',()=>{draft[el.dataset.list]=el.value.split('\n').map(s=>s.trim()).filter(Boolean);dirty()}));
   $('#rulesTa').addEventListener('input',e=>{draft.rules=e.target.value;dirty()});
   $('#mtpd').addEventListener('input',e=>{draft.maxTradesPerDay=num(e.target.value);dirty()});
-  $('#addA').onclick=()=>{draft.accounts.push({id:'a'+uid(),name:'New account',start:50000,mll:2000,dll:null,target:3000,trail:'eod'});cfgDirty=true;render()};
+  $('#addA').onclick=()=>{draft.accounts.push({id:'a'+uid(),name:'Topstep 50K #'+(draft.accounts.length+1),start:50000,mll:2000,dll:null,target:3000,trail:'eod'});cfgDirty=true;window.__cfgPending=true;render()};
   $('#addI').onclick=()=>{draft.instruments.push({sym:'',pv:1,fee:0});cfgDirty=true;render()};
   document.querySelectorAll('[data-rma]').forEach(b=>b.onclick=()=>{const a=draft.accounts[+b.dataset.rma];const n=store.trades.filter(t=>t.account===a.id).length;
-    confirmBox(`Remove “${a.name}”?`,n?`${n} trades are linked to it. They stay in your journal but won’t show under any account.`:'',()=>{draft.accounts.splice(+b.dataset.rma,1);cfgDirty=true;render()})});
-  document.querySelectorAll('[data-rmi]').forEach(b=>b.onclick=()=>{draft.instruments.splice(+b.dataset.rmi,1);cfgDirty=true;render()});
-  $('#saveCfg').onclick=async()=>{draft.instruments=draft.instruments.filter(i=>i.sym);if(!draft.accounts.length){toast('Keep at least one account');return}
-    for(const a of draft.accounts){if(!isNum(a.start)){toast('Every account needs a start balance');return}}
-    if(await saveSettings(draft)){cfgDirty=false;toast('Setup saved');render()}};
+    confirmBox(`Remove “${a.name}”?`,n?`${n} trades are linked to it. They stay in your journal but won’t show under any account.`:'',()=>{draft.accounts.splice(+b.dataset.rma,1);cfgDirty=true;window.__cfgPending=true;render()})});
+  document.querySelectorAll('[data-rmi]').forEach(b=>b.onclick=()=>{draft.instruments.splice(+b.dataset.rmi,1);cfgDirty=true;window.__cfgPending=true;render()});
+  $('#saveCfg').onclick=async()=>{clearTimeout(window.__cfgT);const [d,err]=validate();if(err){toast(err);note('Not saved: '+err);return}
+    if(await saveSettings(d)){cfgDirty=false;draft=null;toast('Setup saved');render()}};
   $('#resetCfg').onclick=()=>{cfgDirty=false;draft=null;render()};
   $('#bkJson').onclick=()=>showExport(JSON.stringify({version:1,exported:new Date().toISOString(),settings:store.settings,trades:store.trades,days:store.days},null,1),'backup.json');
   $('#rsJson').onchange=e=>{const f=e.target.files[0];if(!f)return;f.text().then(async txt=>{let d;try{d=JSON.parse(txt)}catch(_){toast('That file isn’t valid JSON');return}
@@ -631,6 +640,7 @@ function importCSV(txt){
 }
 
 /* ---------- routing ---------- */
+window.addEventListener('beforeunload',e=>{if(cfgDirty){e.preventDefault();e.returnValue=''}});
 function route(){const h=location.hash.slice(1);view=['dashboard','trades','calendar','config'].includes(h)?h:'dashboard';render()}
 window.addEventListener('hashchange',route);
 $('#newBtn').onclick=()=>{if(store.user)openTrade()};
